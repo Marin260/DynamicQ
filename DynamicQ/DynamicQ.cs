@@ -1,5 +1,3 @@
-using System.Linq.Expressions;
-using System.Reflection;
 using DynamicQ.DataStructures;
 using DynamicQ.Extensions;
 using Microsoft.Extensions.Options;
@@ -7,20 +5,26 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DynamicQ;
 
+/// <summary>
+/// Builds dynamic EF Core <see cref="IQueryable{T}"/> projections from a <see cref="DataStructures.DynamicQTableTree"/>.
+/// </summary>
 public class DynamicQ
 {
     private DynamicQOptions Options { get; set; }
     private static BindingFlags DefaultBindingFlags { get; set; }
     private Random Random { get; }
 
+    /// <summary>
+    /// Creates an instance using configured <see cref="DynamicQOptions"/>.
+    /// </summary>
+    /// <param name="options">Options snapshot from DI.</param>
     public DynamicQ(IOptions<DynamicQOptions> options)
     {
         Options = options.Value;
         DefaultBindingFlags = BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance;
         Random = new Random();
     }
-    
-    
+
     #region Public Methods
 
     /// <summary>
@@ -67,18 +71,10 @@ public class DynamicQ
     /// </summary>
     /// <param name="tableTree">Tree structure with required nodes (paths and properties to select)</param>
     /// <returns>Custom Expression to use in a .Select() method</returns>
-    /// <example>
-    /// Example:
-    ///
-    ///         Currency = new Currency()
-    ///         {
-    ///             StructureRoes = PlacementStructure?.Currency.StructureRoes.Select(StructureRoe => new StructureRoe()
-    ///             {
-    ///                 StructureRoeId = StructureRoes .StructureRoeId
-    ///             }).ToList()
-    ///         },
-    /// 
-    /// </example>
+    /// <remarks>
+    /// Example shape (illustrative): nested <c>Currency</c> with <c>StructureRoes</c> projected via
+    /// <c>Select</c> into new items (e.g. each item carries <c>StructureRoeId</c> from the source row).
+    /// </remarks>
     private Expression<Func<TEntity, TEntity>> CreateSelectExpressionBodyForCollection<TEntity>(
         DynamicQTableTree tableTree
     ) where TEntity : class
@@ -103,20 +99,10 @@ public class DynamicQ
     /// <param name="propertyAccess">Property accessor for accessing object properties</param>
     /// <param name="parentNode"></param>
     /// <returns>Custom Expression to use in a .Select() method</returns>
-    /// <example>
-    /// Generated Example:
-    ///
-    ///         PlacementStructure => new PlacementStructure()
-    ///         {
-    ///             PlacementStructureId = PlacementStructure.PlacementStructureId,
-    ///             Currency = new Currency()
-    ///             {
-    ///                 CurrencyId = PlacementStructure?.Currency.CurrencyId,
-    ///                 CurrencyName = PlacementStructure?.Currency.CurrencyName
-    ///             },
-    ///         }
-    /// 
-    /// </example>
+    /// <remarks>
+    /// Generated shape (illustrative): a lambda from the navigation parameter to <c>new</c> root type
+    /// with scalars copied and nested types built with member initializers (null-conditional where applicable).
+    /// </remarks>
     private MemberAssignment? CreateSelectExpressionBodyForClass<TEntity>(
         DynamicQTableTree tableTree,
         Expression propertyAccess,
@@ -208,7 +194,7 @@ public class DynamicQ
             {
                 continue;
             }
-            
+
             if (Options.RegisteredTables.NavigationPropertyTypeExists(childProperty.PropertyType))
             {
                 AddOneToManyBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType);
@@ -255,7 +241,7 @@ public class DynamicQ
             throw new InvalidOperationException(
                 $"Unable to find '{navigationName}'" + "Please register a Table that implements the navigation name.");
         }
-        
+
         var selectMethod = GetGenericSelectForType(collectionType);
         var toListMethod = GetGenericToListForType(collectionType);
         var propertyAccess = Expression.PropertyOrField(lambdaParameter, navigationName);
@@ -424,6 +410,6 @@ public class DynamicQ
     /// <returns>Query with includes applied</returns>
     private string GenerateUniqueLambdaAccessor(string? tableNavigationName) =>
         $"{tableNavigationName}_{new string(Enumerable.Range(0, 3).Select(_ => (char)('A' + Random.Next(26))).ToArray())}";
-    
+
     #endregion
 }

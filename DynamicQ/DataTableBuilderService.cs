@@ -1,15 +1,21 @@
 using System.Data;
-using System.Reflection;
 using DynamicQ.DataStructures;
 using DynamicQ.Extensions;
 using Microsoft.Extensions.Options;
 
 namespace DynamicQ;
 
+/// <summary>
+/// Flattens entity graphs into a <see cref="DataTable"/> using the same table tree semantics as dynamic queries.
+/// </summary>
+/// <param name="options">Registered tables and defaults from configuration.</param>
 public class DataTableBuilderService(IOptions<DynamicQOptions> options)
 {
     private DynamicQOptions Options { get; set; } = options.Value;
-    
+
+    /// <summary>
+    /// Materializes <paramref name="entityValues"/> into rows and columns derived from <paramref name="tableTree"/>.
+    /// </summary>
     public DataTable FlattenToDataTable<TEntity>(
         IEnumerable<TEntity> entityValues,
         DynamicQTableTree tableTree
@@ -109,6 +115,9 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         return Nullable.GetUnderlyingType(propertyInfo.PropertyType);
     }
 
+    /// <summary>
+    /// Expands <paramref name="entity"/> into one or more row sequences for one-to-one navigation branches.
+    /// </summary>
     public IEnumerable<IEnumerable<object?>> ExpandRowsWithOneToOne<TEntity>(
         TEntity? entity,
         IEnumerable<object?> entryRow,
@@ -184,7 +193,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         var genericMethod = methodInfo?.MakeGenericMethod(typeForGenericInvoke);
 
         var result = genericMethod?.Invoke(this, [entity, entryRow, tableTree]);
-        
+
         return result ?? new object();
     }
 
