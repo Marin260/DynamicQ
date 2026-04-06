@@ -7,4 +7,5 @@ riderModule.iml
 # IDE / local build output
 .idea/
 .vscode/
+*.DotSettings.user
 artifacts/
