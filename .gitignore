@@ -9,3 +9,8 @@ riderModule.iml
 .vscode/
 *.DotSettings.user
 artifacts/
+
+# AI
+.claude/
+.cursor/
+.ai/

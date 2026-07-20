@@ -1,17 +1,17 @@
 using System.Data;
-using DynamicQ.DataStructures;
-using DynamicQ.Extensions;
+using DynamicQuery.DataStructures;
+using DynamicQuery.Extensions;
 using Microsoft.Extensions.Options;
 
-namespace DynamicQ;
+namespace DynamicQuery;
 
 /// <summary>
 /// Flattens entity graphs into a <see cref="DataTable"/> using the same table tree semantics as dynamic queries.
 /// </summary>
 /// <param name="options">Registered tables and defaults from configuration.</param>
-public class DataTableBuilderService(IOptions<DynamicQOptions> options)
+public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 {
-    private DynamicQOptions Options { get; set; } = options.Value;
+    private DynamicQOptions Options { get; } = options.Value;
 
     /// <summary>
     /// Materializes <paramref name="entityValues"/> into rows and columns derived from <paramref name="tableTree"/>.
@@ -21,7 +21,6 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
-
         var table = new DataTable(typeof(TEntity).Name);
         var entityType = typeof(TEntity);
 
@@ -32,7 +31,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         IEnumerable<object?> startingRow = [];
         foreach (var entry in entityValues)
         {
-            var expandedEntities = ExpandRowsWithOneToOne(entry, startingRow, tableTree);
+            var expandedEntities = ExpandRowWithRelationshipObject(entry, startingRow, tableTree);
             foreach (var expandedEntity in expandedEntities)
             {
                 var materializedRow = expandedEntity.ToArray();
@@ -47,7 +46,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
     {
         // 1. Generate table columns
         var headers = new List<DataColumn>();
-        CreateTableHeaders(entityType, tableTree, headers);
+        AppendTableHeaders(entityType, tableTree, headers);
 
         headers = [.. headers.Select((header, idx) =>
         {
@@ -58,7 +57,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         return headers;
     }
 
-    private void CreateTableHeaders(Type? entityType, DynamicQTableTree tableTree, List<DataColumn> table)
+    private void AppendTableHeaders(Type? entityType, DynamicQTableTree tableTree, List<DataColumn> table)
     {
         if (entityType == null)
         {
@@ -75,7 +74,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         if (startTableProperties != null)
         {
             var selectedProps = entityProperties.Where(x => startTableProperties.Contains(x.Name));
-            var dataColumns = selectedProps.Select(x => new DataColumn($"{startTable}_{x.Name}", GetUnderlyingType(x) ?? x.PropertyType));
+            var dataColumns = selectedProps.Select(x => new DataColumn($"{startTable}_{x.Name}", x.ResolveDataColumnType() ?? x.PropertyType));
             table.AddRange(dataColumns);
         }
 
@@ -91,34 +90,23 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         foreach (var node in classNodes)
         {
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = DynamicQTableTree.GenerateSubTree(node);
-            CreateTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
+            var nestedDynamicQTableTree = node.GenerateSubTree();
+            AppendTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
         }
 
         // 3. Traverse collection base navigation props
         foreach (var node in collectionNodes)
         {
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = DynamicQTableTree.GenerateSubTree(node);
-            CreateTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
+            var nestedDynamicQTableTree = node.GenerateSubTree();
+            AppendTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
         }
-    }
-
-    private static Type? GetUnderlyingType(PropertyInfo propertyInfo)
-    {
-        var underlyingType = Nullable.GetUnderlyingType(propertyInfo.PropertyType);
-        if (underlyingType is not null && underlyingType.IsEnum)
-        {
-            return typeof(string);
-        }
-
-        return Nullable.GetUnderlyingType(propertyInfo.PropertyType);
     }
 
     /// <summary>
     /// Expands <paramref name="entity"/> into one or more row sequences for one-to-one navigation branches.
     /// </summary>
-    public IEnumerable<IEnumerable<object?>> ExpandRowsWithOneToOne<TEntity>(
+    private IEnumerable<IEnumerable<object?>> ExpandRowWithRelationshipObject<TEntity>(
         TEntity? entity,
         IEnumerable<object?> entryRow,
         DynamicQTableTree tableTree
@@ -182,14 +170,14 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
         return type.IsValueType ? Activator.CreateInstance(type) : null;
     }
 
-    private object InvokeGenericExpandRowsWithOneToOne(
+    private object InvokeGenericExpandRows(
         Type typeForGenericInvoke,
         object? entity,
         IEnumerable<object?> entryRow,
         DynamicQTableTree tableTree
     )
     {
-        var methodInfo = GetType().GetMethod(nameof(ExpandRowsWithOneToOne), BindingFlags.Public | BindingFlags.IgnoreCase | BindingFlags.Instance);
+        var methodInfo = GetType().GetMethod(nameof(ExpandRowWithRelationshipObject), BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance);
         var genericMethod = methodInfo?.MakeGenericMethod(typeForGenericInvoke);
 
         var result = genericMethod?.Invoke(this, [entity, entryRow, tableTree]);
@@ -234,7 +222,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
             var tmpRows = new List<IEnumerable<object?>>();
             var childNavigationProperty = entityType.GetProperty(node.Key);
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = DynamicQTableTree.GenerateSubTree(node);
+            var nestedDynamicQTableTree = node.GenerateSubTree();
             var nestedEntity = childNavigationProperty?.GetValue(entity);
 
             foreach (var row in rows)
@@ -245,7 +233,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
                 }
 
                 if (nestedNodeType != null &&
-                    InvokeGenericExpandRowsWithOneToOne(nestedNodeType, nestedEntity, row, nestedDynamicQTableTree)
+                    InvokeGenericExpandRows(nestedNodeType, nestedEntity, row, nestedDynamicQTableTree)
                         is IEnumerable<IEnumerable<object?>> expandedRow)
                 {
                     tmpRows.AddRange(expandedRow);
@@ -270,7 +258,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
             var tmpRows = new List<IEnumerable<object?>>();
             var childNavigationProperty = entityType.GetProperty(node.Key);
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = DynamicQTableTree.GenerateSubTree(node);
+            var nestedDynamicQTableTree = node.GenerateSubTree();
 
             if (nestedNodeType != null &&
                 childNavigationProperty?.GetValue(entity) is IEnumerable<object?> nestedEntityCollection)
@@ -284,7 +272,7 @@ public class DataTableBuilderService(IOptions<DynamicQOptions> options)
                 {
                     foreach (var row in rows)
                     {
-                        if (InvokeGenericExpandRowsWithOneToOne(nestedNodeType, entityElement, row, nestedDynamicQTableTree)
+                        if (InvokeGenericExpandRows(nestedNodeType, entityElement, row, nestedDynamicQTableTree)
                             is IEnumerable<IEnumerable<object?>> expandedRow)
                         {
                             tmpRows.AddRange(expandedRow);

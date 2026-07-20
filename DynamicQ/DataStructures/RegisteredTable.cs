@@ -1,4 +1,4 @@
-namespace DynamicQ.DataStructures;
+namespace DynamicQuery.DataStructures;
 
 /// <summary>
 /// Used to register supported tables for dynamic joins and select, if a table isn't registered
@@ -31,7 +31,7 @@ public record RegisteredTable(
 ///     ["RoleValue"]
 /// )
 /// </example>
-public record DefaultTables(
+public record DefaultTable(
     Type TableType,
     string TriggerColumn,
     List<string> FieldsToAppend

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace DynamicQ.Extensions;
+namespace DynamicQuery.Extensions;
 
 /// <summary>
 /// DI registration for DynamicQ.
@@ -16,6 +16,7 @@ public static class DynamicQServiceCollectionExtensions
     {
         services.Configure(configureOptions);
         services.AddSingleton<DynamicQ>();
+        services.AddSingleton<DataTableBuilderService>();
         return services;
     }
 }

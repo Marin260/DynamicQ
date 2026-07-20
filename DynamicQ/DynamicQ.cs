@@ -1,39 +1,32 @@
-using DynamicQ.DataStructures;
-using DynamicQ.Extensions;
+using DynamicQuery.DataStructures;
+using DynamicQuery.Extensions;
 using Microsoft.Extensions.Options;
+using DynamicQuery.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace DynamicQ;
+namespace DynamicQuery;
 
 /// <summary>
 /// Builds dynamic EF Core <see cref="IQueryable{T}"/> projections from a <see cref="DataStructures.DynamicQTableTree"/>.
 /// </summary>
-public class DynamicQ
+/// <remarks>
+/// Creates an instance using configured <see cref="DynamicQOptions"/>.
+/// </remarks>
+/// <param name="options">Options snapshot from DI.</param>
+public sealed class DynamicQ(IOptions<DynamicQOptions> options)
 {
-    private DynamicQOptions Options { get; set; }
-    private static BindingFlags DefaultBindingFlags { get; set; }
-    private Random Random { get; }
-
-    /// <summary>
-    /// Creates an instance using configured <see cref="DynamicQOptions"/>.
-    /// </summary>
-    /// <param name="options">Options snapshot from DI.</param>
-    public DynamicQ(IOptions<DynamicQOptions> options)
-    {
-        Options = options.Value;
-        DefaultBindingFlags = BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance;
-        Random = new Random();
-    }
+    private DynamicQOptions Options { get; } = options.Value;
+    private static readonly BindingFlags DefaultBindingFlags = BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance;
 
     #region Public Methods
 
     /// <summary>
     /// Creates a query with applied filters and includes.
     /// </summary>
-    /// <param name="repository">Repository on which the custom query will be applied</param>
+    /// <param name="sourceRepository">Repository on which the custom query will be applied</param>
     /// <param name="tableTree">Object with nodes containing paths for includes</param>
     public IQueryable<TEntity> CreateCustomQuery<TEntity>(
-        IQueryable<TEntity> repository,
+        IQueryable<TEntity> sourceRepository,
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
@@ -41,15 +34,91 @@ public class DynamicQ
         var includes = tableTree.JoinNodes
             .Select(node => string.Join('.', node.MinimalIncludePath));
 
-        var query = Apply(repository, includes.Where(x => !x.IsNullOrWhiteSpace()))
+        var query = ApplyIncludes(sourceRepository, includes.Where(x => !string.IsNullOrWhiteSpace(x)))
             .Select(customSelector);
 
         return query;
     }
 
+    /// <summary>
+    /// Finds tree structure to reach all of the tables.
+    /// </summary>
+    /// <param name="request">Request containing path (navigation to table) and requested fields</param>
+    /// <returns>TablesWithIncludes - Tree structure containing starting table, child tables, paths to child tables</returns>
+    public DynamicQTableTree? CreateTableTree(DynamicQTableRequest request)
+    {
+        // Filter out tables from the request that do not require a join
+        var tablesToJoin = request.TableSelection
+            .Where(node => TableRequiresJoin(node.PathToTable, node.SelectedTableColumns))
+            .ToList();
+
+        FilterOutColumns(request);
+
+        // If only one path is required then we only need one table
+        // Otherwise create minimal paths to each of the requested tables
+        DynamicQTableTree tableWithIncludes;
+        if (tablesToJoin.Count == 1)
+        {
+            var table = tablesToJoin.First();
+            var startTable = table.PathToTable.Split('.')[^1];
+            var startTableType = Options.RegisteredTables.GetTypeByNavigationName(startTable);
+
+            if (startTable is null || startTableType is null)
+            {
+                return null;
+            }
+
+            tableWithIncludes = new DynamicQTableTree
+            {
+                StartingTable = startTable,
+                // Future changes: apply field filter here
+                JoinNodes = [
+                    new DynamicQNode
+                    {
+                        SelectedTableColumns = table.SelectedTableColumns,
+                        OriginalIncludePath = table.PathToTable,
+                        TableType = startTableType
+                    }
+                ]
+            };
+        }
+        else
+        {
+            var exportNodes = tablesToJoin.Select(table =>
+            {
+                var startTable = table.PathToTable.Split('.')[^1];
+                var startTableType = Options.RegisteredTables.GetTypeByNavigationName(startTable);
+
+                if (startTable is null || startTableType is null)
+                {
+                    return null;
+                }
+
+                var exportNode = new DynamicQNode
+                {
+                    SelectedTableColumns = table.SelectedTableColumns,
+                    OriginalIncludePath = table.PathToTable,
+                    MinimalIncludePath = table.PathToTable.Split('.'),
+                    TableType = startTableType
+                };
+                return exportNode;
+            });
+
+            var validNodes = exportNodes.OfType<DynamicQNode>().ToList();
+            if (validNodes.Count != exportNodes.Count())
+            {
+                return null;
+            }
+
+            tableWithIncludes = new DynamicQTableTree { JoinNodes = validNodes }.CreateMinimalIncludeTableTree();
+        }
+
+        return tableWithIncludes;
+    }
+
     #endregion
 
-    #region Dynamic Select Methods
+    #region Select Expression Builder Methods
 
     private MemberInitExpression GenerateCustomSelectBindings<TEntity>(
         DynamicQTableTree tableTree,
@@ -82,7 +151,7 @@ public class DynamicQ
         var genericType = typeof(TEntity);
         // Create the parameter for our lambada: x => ...
         var lambdaAccessor = Options.RegisteredTables.GetNavigationNameByType(genericType);
-        var lambdaParameter = Expression.Parameter(genericType, GenerateUniqueLambdaAccessor(lambdaAccessor));
+        var lambdaParameter = Expression.Parameter(genericType, GenerateUniqueLambdaParameterName(lambdaAccessor));
 
         // Create bindings for type: MyField = x.FieldName...
         var bindings = new List<MemberBinding>();
@@ -97,7 +166,7 @@ public class DynamicQ
     /// </summary>
     /// <param name="tableTree">Tree structure with required nodes (paths and properties to select)</param>
     /// <param name="propertyAccess">Property accessor for accessing object properties</param>
-    /// <param name="parentNode"></param>
+    /// <param name="parentNodeType"></param>
     /// <returns>Custom Expression to use in a .Select() method</returns>
     /// <remarks>
     /// Generated shape (illustrative): a lambda from the navigation parameter to <c>new</c> root type
@@ -106,7 +175,7 @@ public class DynamicQ
     private MemberAssignment? CreateSelectExpressionBodyForClass<TEntity>(
         DynamicQTableTree tableTree,
         Expression propertyAccess,
-        Type parentNode
+        Type parentNodeType
     ) where TEntity : class
     {
         var genericType = typeof(TEntity);
@@ -126,12 +195,12 @@ public class DynamicQ
         // Nested object must use null sage bindings
         var memberInit = GenerateCustomSelectBindings<TEntity>(tableTree, bindings, lambdaParameter, true);
 
-        return AssignExpressionToObject(parentNode, tableTree.StartingTable!, memberInit);
+        return CreateMemberBinding(parentNodeType, tableTree.StartingTable!, memberInit);
     }
 
     #endregion
 
-    #region Dynamic Join Utils
+    #region Join Utils
 
     /// <summary>
     /// Applies includes to a query
@@ -139,7 +208,7 @@ public class DynamicQ
     /// <param name="query"></param>
     /// <param name="includes">Navigation paths to include</param>
     /// <returns>Query with includes applied</returns>
-    private static IQueryable<TEntity> Apply<TEntity>(IQueryable<TEntity> query, IEnumerable<string> includes)
+    private static IQueryable<TEntity> ApplyIncludes<TEntity>(IQueryable<TEntity> query, IEnumerable<string> includes)
         where TEntity : class
     {
         return includes.Aggregate(query, (current, includeProperty) =>
@@ -148,7 +217,7 @@ public class DynamicQ
 
     #endregion
 
-    #region Dynamic Select Utils
+    #region Select Utils
 
     private static void AddSimplePropertyBindings<TEntity>(
        DynamicQTableTree tableTree,
@@ -188,7 +257,7 @@ public class DynamicQ
                 continue;
             }
 
-            var nestedTableTree = DynamicQTableTree.GenerateSubTree(nodeGroup);
+            var nestedTableTree = nodeGroup.GenerateSubTree();
             var childProperty = genericType.GetProperty(navigationName, DefaultBindingFlags);
             if (childProperty == null)
             {
@@ -197,17 +266,17 @@ public class DynamicQ
 
             if (Options.RegisteredTables.NavigationPropertyTypeExists(childProperty.PropertyType))
             {
-                AddOneToManyBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType);
+                AddNestedEntityBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType);
             }
             // TODO: check if this actually does what we expect it to do -> should check if IsCollection()
             else if (typeof(System.Collections.IEnumerable).IsAssignableFrom(childProperty.PropertyType))
             {
-                AddManyToOneBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType, navigationName);
+                AddNestedCollectionBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType, navigationName);
             }
         }
     }
 
-    private void AddOneToManyBinding(
+    private void AddNestedEntityBinding(
         List<MemberBinding> bindings,
         Type nestedTableType,
         DynamicQTableTree nestedTableTree,
@@ -221,7 +290,7 @@ public class DynamicQ
         }
     }
 
-    private void AddManyToOneBinding(
+    private void AddNestedCollectionBinding(
         List<MemberBinding> bindings,
         Type nestedTableType,
         DynamicQTableTree nestedTableTree,
@@ -248,7 +317,7 @@ public class DynamicQ
 
         var callSelect = Expression.Call(null, selectMethod, propertyAccess, (Expression)result);
         var callToList = Expression.Call(toListMethod, callSelect);
-        var assignment = AssignExpressionToObject(genericType, navigationName, callToList);
+        var assignment = CreateMemberBinding(genericType, navigationName, callToList);
 
         if (assignment != null)
         {
@@ -284,12 +353,12 @@ public class DynamicQ
         if (parentNode != null && propertyAccess != null)
         {
             functionName = nameof(CreateSelectExpressionBodyForClass);
-            functionArguments = [tableTree, propertyAccess, parentNode, DefaultBindingFlags];
+            functionArguments = [tableTree, propertyAccess, parentNode];
         }
         else
         {
             functionName = nameof(CreateSelectExpressionBodyForCollection);
-            functionArguments = [tableTree, DefaultBindingFlags];
+            functionArguments = [tableTree];
         }
 
         var methodInfo = GetType().GetMethod(functionName, BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance);
@@ -338,7 +407,7 @@ public class DynamicQ
         return funcExpression.IsInstanceOfType(invocationResult);
     }
 
-    private static MemberAssignment? AssignExpressionToObject(Type entityType, string field, Expression expression)
+    private static MemberAssignment? CreateMemberBinding(Type entityType, string field, Expression expression)
     {
         var typeProperty = entityType.GetProperty(field, DefaultBindingFlags);
         return typeProperty != null ? Expression.Bind(typeProperty, expression) : null;
@@ -373,7 +442,7 @@ public class DynamicQ
         {
             return propertyAccess;
         }
-        
+
         // Create: source == null ? defaultValue : source.Property
         var nullCheck = Expression.Equal(source, Expression.Constant(null, source.Type));
         return Expression.Condition(nullCheck, defaultValue, propertyAccess, targetProperty.PropertyType);
@@ -407,9 +476,40 @@ public class DynamicQ
     /// Currency_EFG.CurrencyId -> to access currency data on quotes
     /// </summary>
     /// <param name="tableNavigationName"></param>
-    /// <returns>Query with includes applied</returns>
-    private string GenerateUniqueLambdaAccessor(string? tableNavigationName) =>
-        $"{tableNavigationName}_{new string(Enumerable.Range(0, 3).Select(_ => (char)('A' + Random.Next(26))).ToArray())}";
+    private string GenerateUniqueLambdaParameterName(string? tableNavigationName) =>
+        $"{tableNavigationName}_{new string([.. Enumerable.Range(0, 3).Select(_ => (char)('A' + Random.Shared.Next(26)))])}";
+
+    #endregion
+
+    #region DynamicQTableTree methods
+
+    /// <summary>
+    /// Checks if a table requires a join
+    /// </summary>
+    /// <param name="tablePath">Table that is checked if necessary for joing</param>
+    /// <param name="props">Table props that are checked if valid</param>
+    private bool TableRequiresJoin(string tablePath, List<string>? props)
+    {
+        var approvedTable = Options.RegisteredTables.GetRegisteredTableByPath(tablePath);
+
+        // Check if approved table exists and path matches
+        if (approvedTable == null || approvedTable.PathToTable != tablePath || props == null)
+        {
+            return false;
+        }
+
+        // Future changes: add filter to remove props that are not allowed
+        var tableProps = approvedTable.TableType.GetProperties().Select(x => x.Name);
+        return tableProps.Any(props.Contains);
+    }
+
+    private void FilterOutColumns(DynamicQTableRequest request){
+        foreach (var table in request.TableSelection)
+        {
+            var columnsToExclude = Options.RegisteredTables.GetColumnsToExcludeByPathToTable(table.PathToTable);
+            table.SelectedTableColumns = [.. table.SelectedTableColumns.Where(column => !columnsToExclude.Contains(column))];
+        }
+    }
 
     #endregion
 }
