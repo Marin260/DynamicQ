@@ -58,11 +58,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         foreach (var table in tablesToJoin)
         {
             var pathSegments = table.PathToTable.Split('.');
-            var tableType = Options.RegisteredTables.GetTypeByNavigationName(pathSegments[^1]);
-            if (tableType is null)
-            {
-                return null;
-            }
+            var tableType = Options.RegisteredTables.GetTypeByNavigationName(pathSegments[^1])
+                ?? throw new InvalidOperationException($"A required table has not been properly registered: '{pathSegments[^1]}'");
 
             joinNodes.Add(new DynamicQNode
             {
