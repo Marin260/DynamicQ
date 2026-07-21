@@ -23,7 +23,7 @@ internal static class RegisteredTableExtensions
         registeredTables.FirstOrDefault(registeredTable => registeredTable.VirtualNavigationName == virtualNavigationName)
             ?.TableType;
 
-    /// <summary>Registration entry whose virtual name equals <paramref name="path"/>.</summary>
+    /// <summary>Registration entry whose <see cref="RegisteredTable.PathToTable"/> equals <paramref name="path"/>.</summary>
     internal static RegisteredTable? GetRegisteredTableByPath(this HashSet<RegisteredTable> registeredTables, string path) =>
         registeredTables.FirstOrDefault(registeredTable => registeredTable.PathToTable == path);
 

@@ -27,7 +27,7 @@ builder.Services.AddDynamicQ(options =>
 });
 ```
 
-Inject `DynamicQ.DynamicQ` to build queries with `CreateCustomQuery`, or register and use `DataTableBuilderService` when you need `FlattenToDataTable`.
+Inject `DynamicQ.DynamicQ` to build queries with `CreateProjectedQuery`, or register and use `DataTableBuilderService` when you need `FlattenToDataTable`.
 
 ## Repository
 

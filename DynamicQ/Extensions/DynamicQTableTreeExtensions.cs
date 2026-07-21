@@ -4,11 +4,19 @@ namespace DynamicQuery.Extensions;
 
 internal static class DynamicQTableTreeExtensions
 {
-    internal static Type? ResolveDataColumnType(this PropertyInfo propertyInfo)
-    {
-        var underlyingType = Nullable.GetUnderlyingType(propertyInfo.PropertyType) ?? propertyInfo.PropertyType;
-        return underlyingType.IsEnum ? typeof(string) : underlyingType;
-    }
+    /// <summary>
+    /// Returns the node whose include path is exhausted, i.e. the table at the root of this (sub)tree.
+    /// </summary>
+    internal static DynamicQNode? GetRootNode(this DynamicQTableTree tableTree) =>
+        tableTree.JoinNodes.FirstOrDefault(x => !x.MinimalIncludePath.Any());
+
+    /// <summary>
+    /// Groups the nodes that still have include segments left by their next navigation segment.
+    /// </summary>
+    internal static IEnumerable<IGrouping<string, DynamicQNode>> GroupByNextSegment(this DynamicQTableTree tableTree) =>
+        tableTree.JoinNodes
+            .Where(x => x.MinimalIncludePath.Any())
+            .GroupBy(x => x.MinimalIncludePath.First());
 
     /// <summary>
     /// Builds a subtree for one grouped navigation segment (first segment stripped from each node's path).
@@ -40,7 +48,7 @@ internal static class DynamicQTableTreeExtensions
         var result = new DynamicQTableTree();
         var firstElementInPath = sourceTree.JoinNodes.FirstOrDefault()?.MinimalIncludePath.FirstOrDefault();
 
-        // If no path path is provided
+        // If no path is provided
         if (firstElementInPath == null && sourceTree.StartingTable == null)
         {
             return result;

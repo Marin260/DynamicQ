@@ -12,6 +12,7 @@ namespace DynamicQuery;
 public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 {
     private DynamicQOptions Options { get; } = options.Value;
+    private static readonly BindingFlags DefaultBindingFlags = BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance;
 
     /// <summary>
     /// Materializes <paramref name="entityValues"/> into rows and columns derived from <paramref name="tableTree"/>.
@@ -31,7 +32,7 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         IEnumerable<object?> startingRow = [];
         foreach (var entry in entityValues)
         {
-            var expandedEntities = ExpandRowWithRelationshipObject(entry, startingRow, tableTree);
+            var expandedEntities = ExpandRows(entry, startingRow, tableTree);
             foreach (var expandedEntity in expandedEntities)
             {
                 var materializedRow = expandedEntity.ToArray();
@@ -66,8 +67,7 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 
         var entityProperties = entityType.GetProperties();
         var startTable = tableTree.StartingTable;
-        var startNode = tableTree.JoinNodes
-            .FirstOrDefault(x => !x.MinimalIncludePath.Any());
+        var startNode = tableTree.GetRootNode();
 
         var startTableProperties = startNode?.SelectedTableColumns;
 
@@ -78,10 +78,11 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
             table.AddRange(dataColumns);
         }
 
+        // TODO: this is useless, its not necessary to group the nodes to traverse the tree, we can just traverse the tree directly
+        // issue is, something is dependent on this code... fix the IEnumerable to DataTable conversion as well, header creation works similarly
+
         // 1. group paths by next table
-        var groupedNodes = tableTree.JoinNodes
-            .Where(x => x.MinimalIncludePath.Any())
-            .GroupBy(x => x.MinimalIncludePath.First());
+        var groupedNodes = tableTree.GroupByNextSegment();
 
         var classNodes = groupedNodes.Where(node => !NodeIsCollection(entityType, node.Key));
         var collectionNodes = groupedNodes.Where(node => NodeIsCollection(entityType, node.Key));
@@ -104,9 +105,9 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
     }
 
     /// <summary>
-    /// Expands <paramref name="entity"/> into one or more row sequences for one-to-one navigation branches.
+    /// Expands <paramref name="entity"/> into one or more row sequences by traversing its class and collection navigation branches.
     /// </summary>
-    private IEnumerable<IEnumerable<object?>> ExpandRowWithRelationshipObject<TEntity>(
+    private IEnumerable<IEnumerable<object?>> ExpandRows<TEntity>(
         TEntity? entity,
         IEnumerable<object?> entryRow,
         DynamicQTableTree tableTree
@@ -118,7 +119,9 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         var rows = InitializeRows(entity, entryRow, tableTree, entityProperties);
 
         // 1. group paths by next table
-        var groupedNodes = GroupExportNodes(tableTree);
+        var groupedNodes = tableTree.GroupByNextSegment();
+
+        // TODO: again this is completely unnecessary, we can just traverse the tree directly, remove it
 
         // 2. separate grouped nodes in 2 groups, Collection based and Class based navigation based types
         //    Note: shouldn't really matter which type of navigation it is, but it's easier to track this way
@@ -136,9 +139,8 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 
     private static bool NodeIsCollection(Type? tableType, string tableName)
     {
-        var property = tableType?.GetProperty(tableName);
-        // TODO: check if this actually does what we expect it to do -> should check if IsCollection()
-        return typeof(System.Collections.IEnumerable).IsAssignableFrom(property?.PropertyType);
+        var property = tableType?.GetProperty(tableName, DefaultBindingFlags);
+        return property?.IsCollectionNavigation() ?? false;
     }
 
     private static object? GetValueOrDefault(PropertyInfo propertyInfo, object? entity)
@@ -170,19 +172,17 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         return type.IsValueType ? Activator.CreateInstance(type) : null;
     }
 
-    private object InvokeGenericExpandRows(
+    private object? InvokeGenericExpandRows(
         Type typeForGenericInvoke,
         object? entity,
         IEnumerable<object?> entryRow,
         DynamicQTableTree tableTree
     )
     {
-        var methodInfo = GetType().GetMethod(nameof(ExpandRowWithRelationshipObject), BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance);
-        var genericMethod = methodInfo?.MakeGenericMethod(typeForGenericInvoke);
+        var methodInfo = GetType().GetMethod(nameof(ExpandRows), BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Unable to resolve method '{nameof(ExpandRows)}' for dynamic invocation.");
 
-        var result = genericMethod?.Invoke(this, [entity, entryRow, tableTree]);
-
-        return result ?? new object();
+        return methodInfo.MakeGenericMethod(typeForGenericInvoke).Invoke(this, [entity, entryRow, tableTree]);
     }
 
     private static IEnumerable<IEnumerable<object?>> InitializeRows<TEntity>(
@@ -192,7 +192,7 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         PropertyInfo[] entityProperties
     ) where TEntity : class
     {
-        var startNode = tableTree.JoinNodes.FirstOrDefault(x => !x.MinimalIncludePath.Any());
+        var startNode = tableTree.GetRootNode();
         var startTableProperties = startNode?.SelectedTableColumns;
 
         if (startTableProperties == null)
@@ -205,11 +205,6 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         return [newRow];
     }
 
-    private static IEnumerable<IGrouping<string, DynamicQNode>> GroupExportNodes(DynamicQTableTree tableTree)
-        => tableTree.JoinNodes
-            .Where(x => x.MinimalIncludePath.Any())
-            .GroupBy(x => x.MinimalIncludePath.First());
-
     private IEnumerable<IEnumerable<object?>> TraverseClassNodes<TEntity>(
         Type entityType,
         TEntity? entity,
@@ -220,7 +215,7 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         foreach (var node in classNodes)
         {
             var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.Key);
+            var childNavigationProperty = entityType.GetProperty(node.Key, DefaultBindingFlags);
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
             var nestedDynamicQTableTree = node.GenerateSubTree();
             var nestedEntity = childNavigationProperty?.GetValue(entity);
@@ -256,7 +251,7 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         foreach (var node in collectionNodes)
         {
             var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.Key);
+            var childNavigationProperty = entityType.GetProperty(node.Key, DefaultBindingFlags);
             var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
             var nestedDynamicQTableTree = node.GenerateSubTree();
 

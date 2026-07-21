@@ -8,7 +8,7 @@ namespace DynamicQuery.DataStructures;
 /// <param name="VirtualNavigationName">Name of the navigation property in a nested class</param>
 /// <param name="PathToTable">Virtual path to reach the registered table</param>
 /// <param name="ExcludedColumns">List of columns to exclude from selection</param>
-public record RegisteredTable(
+public sealed record RegisteredTable(
     Type TableType,
     string VirtualNavigationName,
     string PathToTable,
@@ -31,7 +31,7 @@ public record RegisteredTable(
 ///     ["RoleValue"]
 /// )
 /// </example>
-public record DefaultTable(
+public sealed record DefaultTable(
     Type TableType,
     string TriggerColumn,
     List<string> FieldsToAppend

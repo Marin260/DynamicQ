@@ -21,21 +21,21 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     #region Public Methods
 
     /// <summary>
-    /// Creates a query with applied filters and includes.
+    /// Creates a query with the includes and projection described by <paramref name="tableTree"/> applied.
     /// </summary>
-    /// <param name="sourceRepository">Repository on which the custom query will be applied</param>
+    /// <param name="sourceRepository">Repository on which the projected query will be applied</param>
     /// <param name="tableTree">Object with nodes containing paths for includes</param>
-    public IQueryable<TEntity> CreateCustomQuery<TEntity>(
+    public IQueryable<TEntity> CreateProjectedQuery<TEntity>(
         IQueryable<TEntity> sourceRepository,
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
-        var customSelector = CreateSelectExpressionBodyForCollection<TEntity>(tableTree);
+        var selector = CreateSelectorLambda<TEntity>(tableTree);
         var includes = tableTree.JoinNodes
             .Select(node => string.Join('.', node.MinimalIncludePath));
 
         var query = ApplyIncludes(sourceRepository, includes.Where(x => !string.IsNullOrWhiteSpace(x)))
-            .Select(customSelector);
+            .Select(selector);
 
         return query;
     }
@@ -47,87 +47,50 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     /// <returns>TablesWithIncludes - Tree structure containing starting table, child tables, paths to child tables</returns>
     public DynamicQTableTree? CreateTableTree(DynamicQTableRequest request)
     {
-        // Filter out tables from the request that do not require a join
+        // Filter out tables from the request that are not registered or select no valid columns
         var tablesToJoin = request.TableSelection
-            .Where(node => TableRequiresJoin(node.PathToTable, node.SelectedTableColumns))
+            .Where(node => IsValidTableSelection(node.PathToTable, node.SelectedTableColumns))
             .ToList();
 
-        FilterOutColumns(request);
+        RemoveExcludedColumns(request);
 
-        // If only one path is required then we only need one table
-        // Otherwise create minimal paths to each of the requested tables
-        DynamicQTableTree tableWithIncludes;
-        if (tablesToJoin.Count == 1)
+        var joinNodes = new List<DynamicQNode>();
+        foreach (var table in tablesToJoin)
         {
-            var table = tablesToJoin.First();
-            var startTable = table.PathToTable.Split('.')[^1];
-            var startTableType = Options.RegisteredTables.GetTypeByNavigationName(startTable);
-
-            if (startTable is null || startTableType is null)
+            var pathSegments = table.PathToTable.Split('.');
+            var tableType = Options.RegisteredTables.GetTypeByNavigationName(pathSegments[^1]);
+            if (tableType is null)
             {
                 return null;
             }
 
-            tableWithIncludes = new DynamicQTableTree
+            joinNodes.Add(new DynamicQNode
             {
-                StartingTable = startTable,
-                // Future changes: apply field filter here
-                JoinNodes = [
-                    new DynamicQNode
-                    {
-                        SelectedTableColumns = table.SelectedTableColumns,
-                        OriginalIncludePath = table.PathToTable,
-                        TableType = startTableType
-                    }
-                ]
-            };
-        }
-        else
-        {
-            var exportNodes = tablesToJoin.Select(table =>
-            {
-                var startTable = table.PathToTable.Split('.')[^1];
-                var startTableType = Options.RegisteredTables.GetTypeByNavigationName(startTable);
-
-                if (startTable is null || startTableType is null)
-                {
-                    return null;
-                }
-
-                var exportNode = new DynamicQNode
-                {
-                    SelectedTableColumns = table.SelectedTableColumns,
-                    OriginalIncludePath = table.PathToTable,
-                    MinimalIncludePath = table.PathToTable.Split('.'),
-                    TableType = startTableType
-                };
-                return exportNode;
+                SelectedTableColumns = table.SelectedTableColumns,
+                OriginalIncludePath = table.PathToTable,
+                MinimalIncludePath = pathSegments,
+                TableType = tableType
             });
-
-            var validNodes = exportNodes.OfType<DynamicQNode>().ToList();
-            if (validNodes.Count != exportNodes.Count())
-            {
-                return null;
-            }
-
-            tableWithIncludes = new DynamicQTableTree { JoinNodes = validNodes }.CreateMinimalIncludeTableTree();
         }
 
-        return tableWithIncludes;
+        // Collapse the shared path prefix so only the necessary joins remain
+        // (for a single table the whole path collapses and no join is required)
+        return new DynamicQTableTree { JoinNodes = joinNodes }.CreateMinimalIncludeTableTree();
     }
 
     #endregion
 
     #region Select Expression Builder Methods
 
-    private MemberInitExpression GenerateCustomSelectBindings<TEntity>(
+    private MemberInitExpression BuildMemberInit<TEntity>(
         DynamicQTableTree tableTree,
-        List<MemberBinding> bindings,
         Expression lambdaParameter,
         bool nullSafeBindings) where TEntity : class
     {
         var genericType = typeof(TEntity);
 
+        // Create bindings for type: MyField = x.FieldName...
+        var bindings = new List<MemberBinding>();
         AddSimplePropertyBindings<TEntity>(tableTree, bindings, lambdaParameter, nullSafeBindings);
         AddNestedPropertyBindings(tableTree, bindings, lambdaParameter, genericType);
 
@@ -136,50 +99,47 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     }
 
     /// <summary>
-    /// Generates custom selector for collection types
+    /// Generates the selector lambda for an entity type, usable in a .Select() call
     /// </summary>
     /// <param name="tableTree">Tree structure with required nodes (paths and properties to select)</param>
-    /// <returns>Custom Expression to use in a .Select() method</returns>
+    /// <returns>Selector lambda to use in a .Select() method</returns>
     /// <remarks>
     /// Example shape (illustrative): nested <c>Currency</c> with <c>StructureRoes</c> projected via
     /// <c>Select</c> into new items (e.g. each item carries <c>StructureRoeId</c> from the source row).
     /// </remarks>
-    private Expression<Func<TEntity, TEntity>> CreateSelectExpressionBodyForCollection<TEntity>(
+    private Expression<Func<TEntity, TEntity>> CreateSelectorLambda<TEntity>(
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
         var genericType = typeof(TEntity);
-        // Create the parameter for our lambada: x => ...
+        // Create the parameter for our lambda: x => ...
         var lambdaAccessor = Options.RegisteredTables.GetNavigationNameByType(genericType);
         var lambdaParameter = Expression.Parameter(genericType, GenerateUniqueLambdaParameterName(lambdaAccessor));
 
-        // Create bindings for type: MyField = x.FieldName...
-        var bindings = new List<MemberBinding>();
-
-        var memberInit = GenerateCustomSelectBindings<TEntity>(tableTree, bindings, lambdaParameter, false);
+        var memberInit = BuildMemberInit<TEntity>(tableTree, lambdaParameter, false);
 
         return Expression.Lambda<Func<TEntity, TEntity>>(memberInit, lambdaParameter);
     }
 
     /// <summary>
-    /// Generates custom selector for class types
+    /// Generates the member assignment for a nested (class type) navigation property
     /// </summary>
     /// <param name="tableTree">Tree structure with required nodes (paths and properties to select)</param>
     /// <param name="propertyAccess">Property accessor for accessing object properties</param>
-    /// <param name="parentNodeType"></param>
-    /// <returns>Custom Expression to use in a .Select() method</returns>
+    /// <param name="parentNodeType">Type of the parent node that owns the navigation property</param>
+    /// <returns>Member assignment binding the nested projection to the parent property</returns>
     /// <remarks>
     /// Generated shape (illustrative): a lambda from the navigation parameter to <c>new</c> root type
     /// with scalars copied and nested types built with member initializers (null-conditional where applicable).
     /// </remarks>
-    private MemberAssignment? CreateSelectExpressionBodyForClass<TEntity>(
+    private MemberAssignment? CreateNestedMemberAssignment<TEntity>(
         DynamicQTableTree tableTree,
         Expression propertyAccess,
         Type parentNodeType
     ) where TEntity : class
     {
         var genericType = typeof(TEntity);
-        // Create the parameter for our lambada: x.NavigationPropName => ...
+        // Create the parameter for our lambda: x.NavigationPropName => ...
         var entityTablePath = tableTree.JoinNodes.FirstOrDefault(x => x.TableType == genericType)?.OriginalIncludePath;
         var lambdaAccessor = Options.RegisteredTables.GetNavigationNameByTypeAndPath(genericType, entityTablePath);
         if (lambdaAccessor == null)
@@ -189,11 +149,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
 
         var lambdaParameter = Expression.PropertyOrField(propertyAccess, lambdaAccessor);
 
-        // Create bindings for type: MyField = x.FieldName...
-        var bindings = new List<MemberBinding>();
-
-        // Nested object must use null sage bindings
-        var memberInit = GenerateCustomSelectBindings<TEntity>(tableTree, bindings, lambdaParameter, true);
+        // Nested object must use null safe bindings
+        var memberInit = BuildMemberInit<TEntity>(tableTree, lambdaParameter, true);
 
         return CreateMemberBinding(parentNodeType, tableTree.StartingTable!, memberInit);
     }
@@ -225,7 +182,7 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
        Expression lambdaParameter,
        bool nullSafeBindings) where TEntity : class
     {
-        var tableNode = tableTree.JoinNodes.FirstOrDefault(x => !x.MinimalIncludePath.Any());
+        var tableNode = tableTree.GetRootNode();
         if (tableNode == null)
         {
             return;
@@ -244,9 +201,7 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         Expression lambdaParameter,
         Type genericType)
     {
-        var groupedNodes = tableTree.JoinNodes
-            .Where(x => x.MinimalIncludePath.Any())
-            .GroupBy(x => x.MinimalIncludePath.First());
+        var groupedNodes = tableTree.GroupByNextSegment();
 
         foreach (var nodeGroup in groupedNodes)
         {
@@ -268,8 +223,7 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
             {
                 AddNestedEntityBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType);
             }
-            // TODO: check if this actually does what we expect it to do -> should check if IsCollection()
-            else if (typeof(System.Collections.IEnumerable).IsAssignableFrom(childProperty.PropertyType))
+            else if (childProperty.IsCollectionNavigation())
             {
                 AddNestedCollectionBinding(bindings, nestedTableType, nestedTableTree, lambdaParameter, genericType, navigationName);
             }
@@ -304,18 +258,17 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
             return;
         }
 
-        var collectionType = Options.RegisteredTables.GetTypeByNavigationName(navigationName);
-        if (collectionType == null)
-        {
-            throw new InvalidOperationException(
-                $"Unable to find '{navigationName}'" + "Please register a Table that implements the navigation name.");
-        }
+        // TODO: double check if this is required, i think i implemented a "security check", if the table is registered that means the user allowed it
+        // if not requried just use nestedTableType instead of collectionType
+
+        var collectionType = Options.RegisteredTables.GetTypeByNavigationName(navigationName) 
+            ?? throw new InvalidOperationException($"Unable to find '{navigationName}'" + "Please register a Table that implements the navigation name.");
 
         var selectMethod = GetGenericSelectForType(collectionType);
         var toListMethod = GetGenericToListForType(collectionType);
         var propertyAccess = Expression.PropertyOrField(lambdaParameter, navigationName);
 
-        var callSelect = Expression.Call(null, selectMethod, propertyAccess, (Expression)result);
+        var callSelect = Expression.Call(null, selectMethod, propertyAccess, (Expression)result!);
         var callToList = Expression.Call(toListMethod, callSelect);
         var assignment = CreateMemberBinding(genericType, navigationName, callToList);
 
@@ -341,7 +294,7 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         return [.. bindings];
     }
 
-    private object InvokeGenericCreateSelectExpression(
+    private object? InvokeGenericCreateSelectExpression(
         Type typeForGenericInvoke,
         DynamicQTableTree tableTree,
         Expression? propertyAccess,
@@ -352,24 +305,24 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         object[] functionArguments;
         if (parentNode != null && propertyAccess != null)
         {
-            functionName = nameof(CreateSelectExpressionBodyForClass);
+            functionName = nameof(CreateNestedMemberAssignment);
             functionArguments = [tableTree, propertyAccess, parentNode];
         }
         else
         {
-            functionName = nameof(CreateSelectExpressionBodyForCollection);
+            functionName = nameof(CreateSelectorLambda);
             functionArguments = [tableTree];
         }
 
-        var methodInfo = GetType().GetMethod(functionName, BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance);
-        var genericMethod = methodInfo?.MakeGenericMethod(typeForGenericInvoke);
+        var methodInfo = GetType().GetMethod(functionName, BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Unable to resolve method '{functionName}' for dynamic invocation.");
 
-        var result = genericMethod?.Invoke(this, functionArguments);
-
-        return result ?? new object();
+        return methodInfo
+            .MakeGenericMethod(typeForGenericInvoke)
+            .Invoke(this, functionArguments);
     }
 
-    private static MethodInfo GetGenericSelectForType(Type collectionType)
+    private static MethodInfo GetGenericSelectForType(Type elementType)
     {
         // Get generic Select
         var selectMethod = typeof(Enumerable).GetMethods()
@@ -384,22 +337,22 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
                     var genDef = selectorParam.ParameterType.GetGenericTypeDefinition();
                     return genDef == typeof(Func<,>);
                 })
-                .MakeGenericMethod(collectionType, collectionType);
+                .MakeGenericMethod(elementType, elementType);
 
         return selectMethod;
     }
 
-    private static MethodInfo GetGenericToListForType(Type collectionType)
+    private static MethodInfo GetGenericToListForType(Type elementType)
     {
         // Get generic ToList
         var toListMethod = typeof(Enumerable).GetMethods()
                 .Single(mi => mi.Name == "ToList" && mi.GetParameters().Length == 1)
-                .MakeGenericMethod(collectionType);
+                .MakeGenericMethod(elementType);
 
         return toListMethod;
     }
 
-    private static bool IsInstanceOfLambdaExpression(Type tableType, object invocationResult)
+    private static bool IsInstanceOfLambdaExpression(Type tableType, object? invocationResult)
     {
         var lambdaGenericExpression = typeof(Func<,>).MakeGenericType(tableType, tableType);
         var funcExpression = typeof(Expression<>).MakeGenericType(lambdaGenericExpression);
@@ -470,8 +423,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
        => !type.IsValueType || Nullable.GetUnderlyingType(type) != null;
 
     /// <summary>
-    /// The same table can be joins twice we need a random string generator to use in lambdas
-    /// Example: If a users joins Currency on both Placement and Quote
+    /// The same table can be joined twice, so we need a random string generator to use in lambdas
+    /// Example: If a user joins Currency on both Placement and Quote
     /// Currency_ABC.CurrencyId -> to access currency data on placements
     /// Currency_EFG.CurrencyId -> to access currency data on quotes
     /// </summary>
@@ -484,11 +437,11 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     #region DynamicQTableTree methods
 
     /// <summary>
-    /// Checks if a table requires a join
+    /// Checks that the requested table is registered and that at least one requested column exists on it
     /// </summary>
-    /// <param name="tablePath">Table that is checked if necessary for joing</param>
+    /// <param name="tablePath">Path of the table that is checked for registration</param>
     /// <param name="props">Table props that are checked if valid</param>
-    private bool TableRequiresJoin(string tablePath, List<string>? props)
+    private bool IsValidTableSelection(string tablePath, List<string>? props)
     {
         var approvedTable = Options.RegisteredTables.GetRegisteredTableByPath(tablePath);
 
@@ -503,7 +456,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         return tableProps.Any(props.Contains);
     }
 
-    private void FilterOutColumns(DynamicQTableRequest request){
+    private void RemoveExcludedColumns(DynamicQTableRequest request)
+    {
         foreach (var table in request.TableSelection)
         {
             var columnsToExclude = Options.RegisteredTables.GetColumnsToExcludeByPathToTable(table.PathToTable);
