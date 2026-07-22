@@ -198,18 +198,16 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         Expression lambdaParameter,
         Type genericType)
     {
-        var groupedNodes = tableTree.GroupByNextSegment();
-
-        foreach (var nodeGroup in groupedNodes)
+        foreach (var child in tableTree.Children)
         {
-            var navigationName = nodeGroup.Key;
+            var navigationName = child.NavigationKey;
             var nestedTableType = Options.RegisteredTables.GetTypeByNavigationName(navigationName);
             if (nestedTableType == null)
             {
                 continue;
             }
 
-            var nestedTableTree = nodeGroup.GenerateSubTree();
+            var nestedTableTree = child.Subtree;
             var childProperty = genericType.GetProperty(navigationName, DefaultBindingFlags);
             if (childProperty == null)
             {
@@ -255,14 +253,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
             return;
         }
 
-        // TODO: double check if this is required, i think i implemented a "security check", if the table is registered that means the user allowed it
-        // if not requried just use nestedTableType instead of collectionType
-
-        var collectionType = Options.RegisteredTables.GetTypeByNavigationName(navigationName) 
-            ?? throw new InvalidOperationException($"Unable to find '{navigationName}'" + "Please register a Table that implements the navigation name.");
-
-        var selectMethod = GetGenericSelectForType(collectionType);
-        var toListMethod = GetGenericToListForType(collectionType);
+        var selectMethod = GetGenericSelectForType(nestedTableType);
+        var toListMethod = GetGenericToListForType(nestedTableType);
         var propertyAccess = Expression.PropertyOrField(lambdaParameter, navigationName);
 
         var callSelect = Expression.Call(null, selectMethod, propertyAccess, (Expression)result!);

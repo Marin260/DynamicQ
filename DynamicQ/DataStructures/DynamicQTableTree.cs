@@ -13,7 +13,23 @@ public sealed class DynamicQTableTree
     public string? StartingTable { get; set; }
     /// <summary>Nodes participating in includes and column selection for this level.</summary>
     public List<DynamicQNode> JoinNodes { get; set; } = [];
+
+    private IReadOnlyList<DynamicQTableTreeChild>? _children;
+
+    /// <summary>
+    /// Child subtrees grouped by their next navigation segment, computed once and cached.
+    /// Reusing the cached subtree instances lets the whole hierarchy materialize a single time
+    /// even when traversal is repeated per entity/row.
+    /// </summary>
+    internal IReadOnlyList<DynamicQTableTreeChild> Children =>
+        _children ??= [.. this.GroupByNextSegment()
+            .Select(group => new DynamicQTableTreeChild(group.Key, group.GenerateSubTree()))];
 }
+
+/// <summary>
+/// A single grouped child of a <see cref="DynamicQTableTree"/>: the navigation segment and its subtree.
+/// </summary>
+internal sealed record DynamicQTableTreeChild(string NavigationKey, DynamicQTableTree Subtree);
 
 /// <summary>
 /// One node in a <see cref="DynamicQTableTree"/>: entity type, columns to project, and include path fragments.

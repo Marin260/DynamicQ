@@ -78,29 +78,22 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
             table.AddRange(dataColumns);
         }
 
-        // TODO: this is useless, its not necessary to group the nodes to traverse the tree, we can just traverse the tree directly
-        // issue is, something is dependent on this code... fix the IEnumerable to DataTable conversion as well, header creation works similarly
+        var children = tableTree.Children;
+        var classNodes = children.Where(child => !NodeIsCollection(entityType, child.NavigationKey));
+        var collectionNodes = children.Where(child => NodeIsCollection(entityType, child.NavigationKey));
 
-        // 1. group paths by next table
-        var groupedNodes = tableTree.GroupByNextSegment();
-
-        var classNodes = groupedNodes.Where(node => !NodeIsCollection(entityType, node.Key));
-        var collectionNodes = groupedNodes.Where(node => NodeIsCollection(entityType, node.Key));
-
-        // 2. Must first traverse non collection base navigation props
-        foreach (var node in classNodes)
+        // 1. Must first traverse non collection based navigation props
+        foreach (var child in classNodes)
         {
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = node.GenerateSubTree();
-            AppendTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
+            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(child.NavigationKey);
+            AppendTableHeaders(nestedNodeType, child.Subtree, table);
         }
 
-        // 3. Traverse collection base navigation props
-        foreach (var node in collectionNodes)
+        // 2. Traverse collection based navigation props
+        foreach (var child in collectionNodes)
         {
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = node.GenerateSubTree();
-            AppendTableHeaders(nestedNodeType, nestedDynamicQTableTree, table);
+            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(child.NavigationKey);
+            AppendTableHeaders(nestedNodeType, child.Subtree, table);
         }
     }
 
@@ -118,20 +111,16 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 
         var rows = InitializeRows(entity, entryRow, tableTree, entityProperties);
 
-        // 1. group paths by next table
-        var groupedNodes = tableTree.GroupByNextSegment();
-
-        // TODO: again this is completely unnecessary, we can just traverse the tree directly, remove it
-
-        // 2. separate grouped nodes in 2 groups, Collection based and Class based navigation based types
+        // 1. Separate child subtrees into Collection based and Class based navigation types.
         //    Note: shouldn't really matter which type of navigation it is, but it's easier to track this way
-        var classNodes = groupedNodes.Where(node => !NodeIsCollection(entityType, node.Key));
-        var collectionNodes = groupedNodes.Where(node => NodeIsCollection(entityType, node.Key));
+        var children = tableTree.Children;
+        var classNodes = children.Where(child => !NodeIsCollection(entityType, child.NavigationKey));
+        var collectionNodes = children.Where(child => NodeIsCollection(entityType, child.NavigationKey));
 
-        // 3. First traverse non collection based navigation props
+        // 2. First traverse non collection based navigation props
         rows = TraverseClassNodes(entityType, entity, rows, classNodes);
 
-        // 4. Then traverse collection based navigation props
+        // 3. Then traverse collection based navigation props
         rows = TraverseCollectionNodes(entityType, entity, rows, collectionNodes);
 
         return rows;
@@ -209,15 +198,15 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         Type entityType,
         TEntity? entity,
         IEnumerable<IEnumerable<object?>> rows,
-        IEnumerable<IGrouping<string, DynamicQNode>> classNodes
+        IEnumerable<DynamicQTableTreeChild> classNodes
     ) where TEntity : class
     {
         foreach (var node in classNodes)
         {
             var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.Key, DefaultBindingFlags);
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = node.GenerateSubTree();
+            var childNavigationProperty = entityType.GetProperty(node.NavigationKey, DefaultBindingFlags);
+            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.NavigationKey);
+            var nestedDynamicQTableTree = node.Subtree;
             var nestedEntity = childNavigationProperty?.GetValue(entity);
 
             foreach (var row in rows)
@@ -245,15 +234,15 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         Type entityType,
         TEntity? entity,
         IEnumerable<IEnumerable<object?>> rows,
-        IEnumerable<IGrouping<string, DynamicQNode>> collectionNodes
+        IEnumerable<DynamicQTableTreeChild> collectionNodes
     ) where TEntity : class
     {
         foreach (var node in collectionNodes)
         {
             var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.Key, DefaultBindingFlags);
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.Key);
-            var nestedDynamicQTableTree = node.GenerateSubTree();
+            var childNavigationProperty = entityType.GetProperty(node.NavigationKey, DefaultBindingFlags);
+            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.NavigationKey);
+            var nestedDynamicQTableTree = node.Subtree;
 
             if (nestedNodeType != null &&
                 childNavigationProperty?.GetValue(entity) is IEnumerable<object?> nestedEntityCollection)
