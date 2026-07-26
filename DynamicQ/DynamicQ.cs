@@ -30,14 +30,31 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
-        var selector = CreateSelectorLambda<TEntity>(tableTree);
-        var includes = tableTree.JoinNodes
-            .Select(node => string.Join('.', node.MinimalIncludePath));
+        tableTree.Build();
 
-        var query = ApplyIncludes(sourceRepository, includes.Where(x => !string.IsNullOrWhiteSpace(x)))
+        var selector = CreateSelectorLambda<TEntity>(tableTree);
+        var includes = CollectIncludePaths(tableTree, string.Empty);
+
+        var query = ApplyIncludes(sourceRepository, includes)
             .Select(selector);
 
         return query;
+    }
+
+    /// <summary>
+    /// Walks the tree producing one EF include path (root-to-node) per descendant node.
+    /// </summary>
+    private static IEnumerable<string> CollectIncludePaths(DynamicQTableTree node, string prefix)
+    {
+        foreach (var child in node.Children)
+        {
+            var path = prefix.Length == 0 ? child.StartingTable! : $"{prefix}.{child.StartingTable}";
+            yield return path;
+            foreach (var deeper in CollectIncludePaths(child, path))
+            {
+                yield return deeper;
+            }
+        }
     }
 
     /// <summary>
@@ -71,8 +88,9 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         }
 
         // Collapse the shared path prefix so only the necessary joins remain
-        // (for a single table the whole path collapses and no join is required)
-        return new DynamicQTableTree { JoinNodes = joinNodes }.CreateMinimalIncludeTableTree();
+        // (for a single table the whole path collapses and no join is required),
+        // then fold the flat nodes into the recursive tree.
+        return new DynamicQTableTree { JoinNodes = joinNodes }.CreateMinimalIncludeTableTree().Build();
     }
 
     #endregion
@@ -100,10 +118,6 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     /// </summary>
     /// <param name="tableTree">Tree structure with required nodes (paths and properties to select)</param>
     /// <returns>Selector lambda to use in a .Select() method</returns>
-    /// <remarks>
-    /// Example shape (illustrative): nested <c>Currency</c> with <c>StructureRoes</c> projected via
-    /// <c>Select</c> into new items (e.g. each item carries <c>StructureRoeId</c> from the source row).
-    /// </remarks>
     private Expression<Func<TEntity, TEntity>> CreateSelectorLambda<TEntity>(
         DynamicQTableTree tableTree
     ) where TEntity : class
@@ -137,7 +151,7 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     {
         var genericType = typeof(TEntity);
         // Create the parameter for our lambda: x.NavigationPropName => ...
-        var entityTablePath = tableTree.JoinNodes.FirstOrDefault(x => x.TableType == genericType)?.OriginalIncludePath;
+        var entityTablePath = tableTree.OriginalIncludePath;
         var lambdaAccessor = Options.RegisteredTables.GetNavigationNameByTypeAndPath(genericType, entityTablePath);
         if (lambdaAccessor == null)
         {
@@ -179,15 +193,9 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
        Expression lambdaParameter,
        bool nullSafeBindings) where TEntity : class
     {
-        var tableNode = tableTree.GetRootNode();
-        if (tableNode == null)
-        {
-            return;
-        }
-
         var newBindings = nullSafeBindings
-            ? GenerateNullSafeBindings<TEntity>(tableNode, lambdaParameter)
-            : GenerateBindings<TEntity>(tableNode, lambdaParameter);
+            ? GenerateNullSafeBindings<TEntity>(tableTree.SelectedColumns, lambdaParameter)
+            : GenerateBindings<TEntity>(tableTree.SelectedColumns, lambdaParameter);
 
         bindings.AddRange(newBindings);
     }
@@ -200,14 +208,14 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     {
         foreach (var child in tableTree.Children)
         {
-            var navigationName = child.NavigationKey;
-            var nestedTableType = Options.RegisteredTables.GetTypeByNavigationName(navigationName);
+            var navigationName = child.StartingTable!;
+            var nestedTableType = child.TableType ?? Options.RegisteredTables.GetTypeByNavigationName(navigationName);
             if (nestedTableType == null)
             {
                 continue;
             }
 
-            var nestedTableTree = child.Subtree;
+            var nestedTableTree = child;
             var childProperty = genericType.GetProperty(navigationName, DefaultBindingFlags);
             if (childProperty == null)
             {
@@ -267,11 +275,11 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         }
     }
 
-    private static List<MemberBinding> GenerateBindings<TEntity>(DynamicQNode node, Expression propertyAccess)
+    private static List<MemberBinding> GenerateBindings<TEntity>(IEnumerable<string> selectedColumns, Expression propertyAccess)
     {
         // Entry points necessary for our selector
         var entityType = typeof(TEntity);
-        var bindings = node.SelectedTableColumns
+        var bindings = selectedColumns
             .Select(field => entityType.GetProperty(field, DefaultBindingFlags))
             .Where(typeProperty => typeProperty != null)
             .Select(typeProperty =>
@@ -355,11 +363,11 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
         return typeProperty != null ? Expression.Bind(typeProperty, expression) : null;
     }
 
-    private static List<MemberBinding> GenerateNullSafeBindings<TEntity>(DynamicQNode node, Expression propertyAccess)
+    private static List<MemberBinding> GenerateNullSafeBindings<TEntity>(IEnumerable<string> selectedColumns, Expression propertyAccess)
     {
         // Entry points necessary for our selector
         var entityType = typeof(TEntity);
-        var bindings = node.SelectedTableColumns
+        var bindings = selectedColumns
             .Select(field => entityType.GetProperty(field, DefaultBindingFlags))
             .Where(typeProperty => typeProperty != null)
             .Select(typeProperty =>
@@ -418,7 +426,8 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     /// Currency_EFG.CurrencyId -> to access currency data on quotes
     /// </summary>
     /// <param name="tableNavigationName"></param>
-    private string GenerateUniqueLambdaParameterName(string? tableNavigationName) =>
+    private static string GenerateUniqueLambdaParameterName(string? tableNavigationName) =>
+        // TODO: There is probably a better way to generate a unique lambda parameter name
         $"{tableNavigationName}_{new string([.. Enumerable.Range(0, 3).Select(_ => (char)('A' + Random.Shared.Next(26)))])}";
 
     #endregion

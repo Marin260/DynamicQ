@@ -22,6 +22,8 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         DynamicQTableTree tableTree
     ) where TEntity : class
     {
+        tableTree.Build();
+
         var table = new DataTable(typeof(TEntity).Name);
         var entityType = typeof(TEntity);
 
@@ -67,38 +69,25 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 
         var entityProperties = entityType.GetProperties();
         var startTable = tableTree.StartingTable;
-        var startNode = tableTree.GetRootNode();
+        var startTableProperties = tableTree.SelectedColumns;
 
-        var startTableProperties = startNode?.SelectedTableColumns;
-
-        if (startTableProperties != null)
+        if (startTableProperties.Any())
         {
             var selectedProps = entityProperties.Where(x => startTableProperties.Contains(x.Name));
             var dataColumns = selectedProps.Select(x => new DataColumn($"{startTable}_{x.Name}", x.ResolveDataColumnType() ?? x.PropertyType));
             table.AddRange(dataColumns);
         }
 
-        var children = tableTree.Children;
-        var classNodes = children.Where(child => !NodeIsCollection(entityType, child.NavigationKey));
-        var collectionNodes = children.Where(child => NodeIsCollection(entityType, child.NavigationKey));
-
-        // 1. Must first traverse non collection based navigation props
-        foreach (var child in classNodes)
+        // Traverse child subtrees in a single pass; header order matches row order.
+        foreach (var child in tableTree.Children)
         {
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(child.NavigationKey);
-            AppendTableHeaders(nestedNodeType, child.Subtree, table);
-        }
-
-        // 2. Traverse collection based navigation props
-        foreach (var child in collectionNodes)
-        {
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(child.NavigationKey);
-            AppendTableHeaders(nestedNodeType, child.Subtree, table);
+            var nestedNodeType = child.TableType ?? Options.RegisteredTables.GetTypeByNavigationName(child.StartingTable!);
+            AppendTableHeaders(nestedNodeType, child, table);
         }
     }
 
     /// <summary>
-    /// Expands <paramref name="entity"/> into one or more row sequences by traversing its class and collection navigation branches.
+    /// Expands <paramref name="entity"/> into one or more row sequences by traversing its navigation branches.
     /// </summary>
     private IEnumerable<IEnumerable<object?>> ExpandRows<TEntity>(
         TEntity? entity,
@@ -111,25 +100,65 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
 
         var rows = InitializeRows(entity, entryRow, tableTree, entityProperties);
 
-        // 1. Separate child subtrees into Collection based and Class based navigation types.
-        //    Note: shouldn't really matter which type of navigation it is, but it's easier to track this way
-        var children = tableTree.Children;
-        var classNodes = children.Where(child => !NodeIsCollection(entityType, child.NavigationKey));
-        var collectionNodes = children.Where(child => NodeIsCollection(entityType, child.NavigationKey));
-
-        // 2. First traverse non collection based navigation props
-        rows = TraverseClassNodes(entityType, entity, rows, classNodes);
-
-        // 3. Then traverse collection based navigation props
-        rows = TraverseCollectionNodes(entityType, entity, rows, collectionNodes);
+        // Traverse every child subtree in a single pass. A class navigation is just a
+        // one-element collection, so both cases share the same expansion logic and the
+        // resulting column order matches AppendTableHeaders.
+        foreach (var child in tableTree.Children)
+        {
+            rows = ExpandChild(entityType, entity, rows, child);
+        }
 
         return rows;
     }
 
-    private static bool NodeIsCollection(Type? tableType, string tableName)
+    private IEnumerable<IEnumerable<object?>> ExpandChild<TEntity>(
+        Type entityType,
+        TEntity? entity,
+        IEnumerable<IEnumerable<object?>> rows,
+        DynamicQTableTree child
+    ) where TEntity : class
     {
-        var property = tableType?.GetProperty(tableName, DefaultBindingFlags);
-        return property?.IsCollectionNavigation() ?? false;
+        var navigationName = child.StartingTable!;
+        var nestedNodeType = child.TableType ?? Options.RegisteredTables.GetTypeByNavigationName(navigationName);
+        if (nestedNodeType == null)
+        {
+            return rows;
+        }
+
+        var childNavigationProperty = entityType.GetProperty(navigationName, DefaultBindingFlags);
+        var nestedEntities = GetNestedEntities(childNavigationProperty, entity, nestedNodeType);
+
+        var expandedRows = new List<IEnumerable<object?>>();
+        foreach (var nestedEntity in nestedEntities)
+        {
+            foreach (var row in rows)
+            {
+                if (InvokeGenericExpandRows(nestedNodeType, nestedEntity, row, child)
+                    is IEnumerable<IEnumerable<object?>> expandedRow)
+                {
+                    expandedRows.AddRange(expandedRow);
+                }
+            }
+        }
+
+        return expandedRows;
+    }
+
+    /// <summary>
+    /// Resolves a navigation value into the sequence of nested entities to expand: collection
+    /// navigations yield their elements (a single default when empty), class navigations yield a
+    /// single element (a default when null).
+    /// </summary>
+    private static IEnumerable<object?> GetNestedEntities(PropertyInfo? navigationProperty, object? entity, Type nestedNodeType)
+    {
+        var value = navigationProperty?.GetValue(entity);
+
+        if (value is IEnumerable<object?> collection)
+        {
+            return collection.Any() ? collection : [Activator.CreateInstance(nestedNodeType)];
+        }
+
+        return [value ?? Activator.CreateInstance(nestedNodeType)];
     }
 
     private static object? GetValueOrDefault(PropertyInfo propertyInfo, object? entity)
@@ -181,10 +210,9 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         PropertyInfo[] entityProperties
     ) where TEntity : class
     {
-        var startNode = tableTree.GetRootNode();
-        var startTableProperties = startNode?.SelectedTableColumns;
+        var startTableProperties = tableTree.SelectedColumns;
 
-        if (startTableProperties == null)
+        if (!startTableProperties.Any())
         {
             return [entryRow];
         }
@@ -192,82 +220,5 @@ public sealed class DataTableBuilderService(IOptions<DynamicQOptions> options)
         var selectedProps = entityProperties.Where(x => startTableProperties.Contains(x.Name));
         var newRow = entryRow.Concat(selectedProps.Select(x => GetValueOrDefault(x, entity)));
         return [newRow];
-    }
-
-    private IEnumerable<IEnumerable<object?>> TraverseClassNodes<TEntity>(
-        Type entityType,
-        TEntity? entity,
-        IEnumerable<IEnumerable<object?>> rows,
-        IEnumerable<DynamicQTableTreeChild> classNodes
-    ) where TEntity : class
-    {
-        foreach (var node in classNodes)
-        {
-            var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.NavigationKey, DefaultBindingFlags);
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.NavigationKey);
-            var nestedDynamicQTableTree = node.Subtree;
-            var nestedEntity = childNavigationProperty?.GetValue(entity);
-
-            foreach (var row in rows)
-            {
-                if (nestedEntity == null && nestedNodeType != null)
-                {
-                    nestedEntity = Activator.CreateInstance(nestedNodeType);
-                }
-
-                if (nestedNodeType != null &&
-                    InvokeGenericExpandRows(nestedNodeType, nestedEntity, row, nestedDynamicQTableTree)
-                        is IEnumerable<IEnumerable<object?>> expandedRow)
-                {
-                    tmpRows.AddRange(expandedRow);
-                }
-            }
-
-            rows = tmpRows;
-        }
-
-        return rows;
-    }
-
-    private IEnumerable<IEnumerable<object?>> TraverseCollectionNodes<TEntity>(
-        Type entityType,
-        TEntity? entity,
-        IEnumerable<IEnumerable<object?>> rows,
-        IEnumerable<DynamicQTableTreeChild> collectionNodes
-    ) where TEntity : class
-    {
-        foreach (var node in collectionNodes)
-        {
-            var tmpRows = new List<IEnumerable<object?>>();
-            var childNavigationProperty = entityType.GetProperty(node.NavigationKey, DefaultBindingFlags);
-            var nestedNodeType = Options.RegisteredTables.GetTypeByNavigationName(node.NavigationKey);
-            var nestedDynamicQTableTree = node.Subtree;
-
-            if (nestedNodeType != null &&
-                childNavigationProperty?.GetValue(entity) is IEnumerable<object?> nestedEntityCollection)
-            {
-                if (!nestedEntityCollection.Any())
-                {
-                    nestedEntityCollection = [Activator.CreateInstance(nestedNodeType)];
-                }
-
-                foreach (var entityElement in nestedEntityCollection)
-                {
-                    foreach (var row in rows)
-                    {
-                        if (InvokeGenericExpandRows(nestedNodeType, entityElement, row, nestedDynamicQTableTree)
-                            is IEnumerable<IEnumerable<object?>> expandedRow)
-                        {
-                            tmpRows.AddRange(expandedRow);
-                        }
-                    }
-                }
-
-                rows = tmpRows;
-            }
-        }
-
-        return rows;
     }
 }

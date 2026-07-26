@@ -1,38 +1,65 @@
-using Microsoft.Extensions.Options;
-using DynamicQuery.Extensions;
-using DynamicQuery.Models;
-
 namespace DynamicQuery.DataStructures;
 
 /// <summary>
-/// Describes the root table and join nodes used to build a dynamic query or <see cref="System.Data.DataTable"/> shape.
+/// A node in the table hierarchy used to build a dynamic query or <see cref="System.Data.DataTable"/> shape.
+/// The flat <see cref="JoinNodes"/> are the public construction input; <see cref="Build"/> folds them into
+/// the recursive <see cref="Children"/> hierarchy that every consumer traverses.
 /// </summary>
 public sealed class DynamicQTableTree
 {
-    /// <summary>Table name or key for the subtree root.</summary>
+    /// <summary>Navigation name of this node (also the member name bound on the parent). Root uses the collapsed table name.</summary>
     public string? StartingTable { get; set; }
-    /// <summary>Nodes participating in includes and column selection for this level.</summary>
+    /// <summary>Flat construction input: one entry per requested table, each carrying its include path.</summary>
     public List<DynamicQNode> JoinNodes { get; set; } = [];
 
-    private IReadOnlyList<DynamicQTableTreeChild>? _children;
+    /// <summary>CLR type of the entity at this node.</summary>
+    public Type? TableType { get; set; }
+    /// <summary>Property names to project at this node.</summary>
+    public IEnumerable<string> SelectedColumns { get; set; } = [];
+    /// <summary>Original (pre-collapse) include path for this node, used to disambiguate the navigation accessor.</summary>
+    public string? OriginalIncludePath { get; set; }
+    /// <summary>Child nodes keyed by navigation name.</summary>
+    public List<DynamicQTableTree> Children { get; set; } = [];
 
     /// <summary>
-    /// Child subtrees grouped by their next navigation segment, computed once and cached.
-    /// Reusing the cached subtree instances lets the whole hierarchy materialize a single time
-    /// even when traversal is repeated per entity/row.
+    /// Folds <see cref="JoinNodes"/> into the <see cref="Children"/> hierarchy via a lookup-or-create per path
+    /// segment (no grouping). Idempotent: existing children are cleared and rebuilt.
     /// </summary>
-    internal IReadOnlyList<DynamicQTableTreeChild> Children =>
-        _children ??= [.. this.GroupByNextSegment()
-            .Select(group => new DynamicQTableTreeChild(group.Key, group.GenerateSubTree()))];
+    public DynamicQTableTree Build()
+    {
+        Children.Clear();
+
+        var root = JoinNodes.FirstOrDefault(n => !n.MinimalIncludePath.Any());
+        TableType = root?.TableType;
+        SelectedColumns = root?.SelectedTableColumns ?? [];
+        OriginalIncludePath = root?.OriginalIncludePath;
+
+        foreach (var node in JoinNodes.Where(n => n.MinimalIncludePath.Any()))
+        {
+            var current = this;
+            foreach (var segment in node.MinimalIncludePath)
+            {
+                var next = current.Children.FirstOrDefault(c => c.StartingTable == segment);
+                if (next == null)
+                {
+                    next = new DynamicQTableTree { StartingTable = segment };
+                    current.Children.Add(next);
+                }
+                current = next;
+            }
+
+            current.TableType = node.TableType;
+            current.SelectedColumns = node.SelectedTableColumns;
+            current.OriginalIncludePath = node.OriginalIncludePath;
+        }
+
+        return this;
+    }
 }
 
 /// <summary>
-/// A single grouped child of a <see cref="DynamicQTableTree"/>: the navigation segment and its subtree.
-/// </summary>
-internal sealed record DynamicQTableTreeChild(string NavigationKey, DynamicQTableTree Subtree);
-
-/// <summary>
-/// One node in a <see cref="DynamicQTableTree"/>: entity type, columns to project, and include path fragments.
+/// One entry in a <see cref="DynamicQTableTree.JoinNodes"/> construction input: entity type, columns to project,
+/// and include path fragments.
 /// </summary>
 public sealed class DynamicQNode
 {
