@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DynamicQ", "DynamicQ\DynamicQ.csproj", "{00A8453F-8FA3-4447-B98B-BFBE0E0EDE36}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DynamicQ.Tests", "DynamicQ.Tests\DynamicQ.Tests.csproj", "{77D2859D-353E-4B2C-89F1-266EBF990EF8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +14,9 @@ Global
 		{00A8453F-8FA3-4447-B98B-BFBE0E0EDE36}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{00A8453F-8FA3-4447-B98B-BFBE0E0EDE36}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{00A8453F-8FA3-4447-B98B-BFBE0E0EDE36}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77D2859D-353E-4B2C-89F1-266EBF990EF8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77D2859D-353E-4B2C-89F1-266EBF990EF8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77D2859D-353E-4B2C-89F1-266EBF990EF8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77D2859D-353E-4B2C-89F1-266EBF990EF8}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

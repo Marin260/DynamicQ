@@ -1,9 +1,41 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net8.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <IsPackable>true</IsPackable>
+        <Version>0.1.0</Version>
+        <PackageId>DynamicQ</PackageId>
+        <Title>DynamicQ</Title>
+        <Product>DynamicQ</Product>
+        <Authors>Marin Martuslovic</Authors>
+        <Copyright>Copyright © 2026 Marin Martuslovic</Copyright>
+        <Description>Build EF Core IQueryable projections from a table tree and flatten results to DataTable when needed.</Description>
+        <PackageTags>entity-framework;efcore;ef-core;linq;query;datatable</PackageTags>
+        <PackageReleaseNotes>Initial release. Targets .NET 8 and EF Core 8.</PackageReleaseNotes>
+        <PackageProjectUrl>https://github.com/Marin260/DynamicQ</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/Marin260/DynamicQ.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.11" />
+      <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.2" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Using Include="System.Linq.Expressions" />
+      <Using Include="System.Reflection" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Include="..\README.md" Pack="true" PackagePath="\" />
+      <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    </ItemGroup>
 
 </Project>

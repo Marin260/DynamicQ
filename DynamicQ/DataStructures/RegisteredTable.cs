@@ -1,4 +1,4 @@
-namespace DynamicQ.DataStructures;
+namespace DynamicQuery.DataStructures;
 
 /// <summary>
 /// Used to register supported tables for dynamic joins and select, if a table isn't registered
@@ -8,7 +8,7 @@ namespace DynamicQ.DataStructures;
 /// <param name="VirtualNavigationName">Name of the navigation property in a nested class</param>
 /// <param name="PathToTable">Virtual path to reach the registered table</param>
 /// <param name="ExcludedColumns">List of columns to exclude from selection</param>
-public record TableRegister(
+public sealed record RegisteredTable(
     Type TableType,
     string VirtualNavigationName,
     string PathToTable,
@@ -31,7 +31,7 @@ public record TableRegister(
 ///     ["RoleValue"]
 /// )
 /// </example>
-public record DefaultTables(
+public sealed record DefaultTable(
     Type TableType,
     string TriggerColumn,
     List<string> FieldsToAppend

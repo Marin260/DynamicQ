@@ -3,3 +3,14 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+
+# IDE / local build output
+.idea/
+.vscode/
+*.DotSettings.user
+artifacts/
+
+# AI
+.claude/
+.cursor/
+.ai/
