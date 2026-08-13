@@ -42,6 +42,26 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     }
 
     /// <summary>
+    /// Creates an expression that projects an entity according to the selected
+    /// columns and navigation tree.
+    /// </summary>
+    /// <typeparam name="TEntity">The root entity type being projected.</typeparam>
+    /// <param name="tableTree">
+    /// The table tree describing the columns and related entities to include.
+    /// Its construction nodes are rebuilt before the selector is generated.
+    /// </param>
+    /// <returns>
+    /// An expression suitable for use with LINQ's <c>Select</c> method.
+    /// </returns>
+    public Expression<Func<TEntity, TEntity>> CreateSelector<TEntity>(
+        DynamicQTableTree tableTree)
+    where TEntity : class
+    {
+        tableTree.Build();
+        return CreateSelectorLambda<TEntity>(tableTree);
+    }
+
+    /// <summary>
     /// Walks the tree producing one EF include path (root-to-node) per descendant node.
     /// </summary>
     private static IEnumerable<string> CollectIncludePaths(DynamicQTableTree node, string prefix)

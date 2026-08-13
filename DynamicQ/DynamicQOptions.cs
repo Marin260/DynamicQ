@@ -8,7 +8,7 @@ namespace DynamicQuery;
 public sealed class DynamicQOptions
 {
     /// <summary>Tables and virtual navigation metadata used to resolve includes and projections.</summary>
-    public HashSet<RegisteredTable> RegisteredTables { get; } = [];
+    public HashSet<RegisteredTable> RegisteredTables { get; set; } = [];
     /// <summary>Default tables to join when specific foreign-key columns are selected.</summary>
     public HashSet<DefaultTable> DefaultTables { get; } = []; // Not yet implemented
 }

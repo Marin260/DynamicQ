@@ -1,7 +1,7 @@
 using DynamicQ.Tests.Domain.Entities;
 using DynamicQuery.DataStructures;
 
-namespace DynamicQ.Tests.DataStructures;
+namespace DynamicQuery.Tests.DataStructures;
 
 public class DynamicQTableTreeTests
 {
