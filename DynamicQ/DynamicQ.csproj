@@ -7,13 +7,13 @@
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <IsPackable>true</IsPackable>
-        <Version>0.1.0</Version>
+        <Version>0.1.1</Version>
         <PackageId>DynamicQ</PackageId>
         <Title>DynamicQ</Title>
         <Product>DynamicQ</Product>
         <Authors>Marin Martuslovic</Authors>
         <Copyright>Copyright © 2026 Marin Martuslovic</Copyright>
-        <Description>Build EF Core IQueryable projections from a table tree and flatten results to DataTable when needed.</Description>
+        <Description>Simple dynamic projections for Entity Framework Core.</Description>
         <PackageTags>entity-framework;efcore;ef-core;linq;query;datatable</PackageTags>
         <PackageReleaseNotes>Initial release. Targets .NET 8 and EF Core 8.</PackageReleaseNotes>
         <PackageProjectUrl>https://github.com/Marin260/DynamicQ</PackageProjectUrl>
