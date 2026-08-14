@@ -127,7 +127,7 @@ var blogs = await dynamicQ
     .ToListAsync(cancellationToken);
 ```
 
-The result is still `List<Blog>`, but only the requested scalar properties and navigation shapes are initialized. Unselected properties have their CLR default values.
+The result is still `List<Blog>`, but only the requested scalar properties and navigation shapes are initialized. Unselected properties have their CLR default values. These are partially initialized entity instances, not DTOs or fully loaded entities; do not treat omitted properties as database values or use the results for updates.
 
 Reference navigations are projected as nested entities. Collection navigations are projected as lists:
 

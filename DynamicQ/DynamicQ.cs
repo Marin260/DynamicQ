@@ -23,6 +23,12 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     /// <summary>
     /// Creates a query with the includes and projection described by <paramref name="tableTree"/> applied.
     /// </summary>
+    /// <remarks>
+    /// The result contains partially initialized instances of <typeparamref name="TEntity"/>.
+    /// Only selected scalar properties and navigation shapes are populated; all other
+    /// properties retain their CLR default values. The result is not a fully loaded entity
+    /// and should not be treated as a DTO or used for updates.
+    /// </remarks>
     /// <param name="sourceRepository">Repository on which the projected query will be applied</param>
     /// <param name="tableTree">Object with nodes containing paths for includes</param>
     public IQueryable<TEntity> CreateProjectedQuery<TEntity>(
@@ -45,6 +51,10 @@ public sealed class DynamicQ(IOptions<DynamicQOptions> options)
     /// Creates an expression that projects an entity according to the selected
     /// columns and navigation tree.
     /// </summary>
+    /// <remarks>
+    /// The expression creates partially initialized instances of <typeparamref name="TEntity"/>.
+    /// Unselected properties retain their CLR default values.
+    /// </remarks>
     /// <typeparam name="TEntity">The root entity type being projected.</typeparam>
     /// <param name="tableTree">
     /// The table tree describing the columns and related entities to include.
